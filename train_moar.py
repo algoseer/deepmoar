@@ -10,6 +10,7 @@ imageFolder='FGnet/Images'
 faces=[]
 trueage=[]
 estages=[]
+isTrain=[]
 
 def map2class(age):
     if age<6:
@@ -21,31 +22,49 @@ def map2class(age):
     else:
         return [0,0,0,1]
         
+def augmentImage(img):
+    images=[]
+
+    images.append(img)
+    images.append(np.fliplr(img))
+
+    return images
+
+
 N=len(open(sys.argv[1]).readlines())
 
 for line in tqdm(file(sys.argv[1]),total=N):
     line=line.rstrip().split()
     
     fname='%s/%s' %(imageFolder,line[0])
+    pid = int(line[0][:3])
+    
 
     img = cv2.imread(fname)
-    img = cv2.resize(img,(100,100))/255.
+    img = cv2.resize(img,(50,50))/255.
 
     ages=map(float,line[1:])
 
-    faces.append(img)
+    for im in augmentImage(img):
 
-    trueage.append(map2class(ages[0]))
-    estages.append([map2class(a) for a in ages[1:]])
+        faces.append(im)
+        trueage.append(map2class(ages[0]))
+        estages.append([map2class(a) for a in ages[1:4]])
 
+        if pid>63:
+            isTrain.append(False)
+        else:   
+            isTrain.append(True)
+
+isTrain=np.array(isTrain)
 faces=np.array(faces)
 trueage=np.array(trueage)
 estages=np.array(estages)
-
-
+#Estimate a majority age for pretraining network
+majage=estages.mean(axis=1)
 
 N,nb_annots,nb_classes=estages.shape
-inp_shape = (100,100,1)
+inp_shape = (50,50,3)
 blank_input = np.zeros(N)
 
 # Define the keras model here for mixture of annotator reliabilities
@@ -53,7 +72,7 @@ blank_input = np.zeros(N)
 
 import keras.backend as K
 from keras.models import Sequential, Model
-from keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Input, GlobalAveragePooling2D, Concatenate, Permute, Reshape, RepeatVector, Multiply, Add, GlobalAveragePooling1D, Lambda
+from keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Input, GlobalAveragePooling2D, Concatenate, Permute, Reshape, RepeatVector, Multiply, Add, GlobalAveragePooling1D, Lambda,, Flatten
 
 face = Input(shape=inp_shape,name='face')
 y = Conv2D(128,3,padding='same',activation='relu')(face)
@@ -62,9 +81,8 @@ y = Conv2D(256,3,padding='same',activation='relu')(y)
 y = MaxPooling2D(pool_size=(2,2))(y)
 y = Conv2D(512,3,padding='same',activation='relu')(y)
 y = MaxPooling2D(pool_size=(2,2))(y)
-face_embed = GlobalAveragePooling2D()(y)
-
-face_rep=Model(inputs=[face], outputs=[face_embed])
+#face_embed = GlobalAveragePooling2D()(y)
+face_embed = Flatten()(y)
 
 #Predict the reliable label
 y = Dense(nb_classes,activation='softmax',name='y_rel')(face_embed)
@@ -99,7 +117,25 @@ y_unrel = Multiply()([bias_concat, unrel_mat])
 
 y_final = Add(name='noisy_y')([y_rel, y_unrel])
 
+#Define a few other models that will be useful later
+ann_rel = Model(inputs=[face],outputs=[rel])
+unrel_model = Model(inputs=[blank], outputs=biases)
+
+#Train a model on the oracle label first
+rel_model = Model(inputs=[face],outputs=[y])
+rel_model.compile(loss='categorical_crossentropy', optimizer='adam',metrics=['accuracy'])
+rel_model.fit(faces[isTrain], majage[isTrain], batch_size=64, epochs=50, validation_data=(faces[~isTrain], majage[~isTrain]))
+
+loss, acc1= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+
 
 pred_model=Model(inputs = [face,blank], outputs=[y_final])
 
-pred_model.compile(loss='categorical_crossentropy', acti
+pred_model.compile(loss='categorical_crossentropy', optimizer='adam',metrics=['accuracy'])
+pred_model.fit([faces[isTrain],blank_input[isTrain]],estages[isTrain], batch_size=64, epochs=50, validation_data=([faces[~isTrain],blank_input[~isTrain]],estages[~isTrain]))
+loss, acc2= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+
+
+print
+print "Majority:",acc1*100
+print "DeepMOAR:",acc2*100
