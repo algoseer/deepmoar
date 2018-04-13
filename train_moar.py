@@ -41,7 +41,7 @@ for line in tqdm(file(sys.argv[1]),total=N):
     
 
     img = cv2.imread(fname)
-    img = cv2.resize(img,(50,50))/255.
+    img = cv2.resize(img,(100,100))/255.
 
     ages=map(float,line[1:])
 
@@ -49,7 +49,7 @@ for line in tqdm(file(sys.argv[1]),total=N):
 
         faces.append(im)
         trueage.append(map2class(ages[0]))
-        estages.append([map2class(a) for a in ages[1:4]])
+        estages.append([map2class(a) for a in ages[1:]])
 
         if pid>63:
             isTrain.append(False)
@@ -64,7 +64,7 @@ estages=np.array(estages)
 majage=estages.mean(axis=1)
 
 N,nb_annots,nb_classes=estages.shape
-inp_shape = (50,50,3)
+inp_shape = (100,100,3)
 blank_input = np.zeros(N)
 
 # Define the keras model here for mixture of annotator reliabilities
@@ -72,7 +72,7 @@ blank_input = np.zeros(N)
 
 import keras.backend as K
 from keras.models import Sequential, Model
-from keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Input, GlobalAveragePooling2D, Concatenate, Permute, Reshape, RepeatVector, Multiply, Add, GlobalAveragePooling1D, Lambda,, Flatten
+from keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Input, GlobalAveragePooling2D, Concatenate, Permute, Reshape, RepeatVector, Multiply, Add, GlobalAveragePooling1D, Lambda, Flatten
 
 face = Input(shape=inp_shape,name='face')
 y = Conv2D(128,3,padding='same',activation='relu')(face)
@@ -121,21 +121,43 @@ y_final = Add(name='noisy_y')([y_rel, y_unrel])
 ann_rel = Model(inputs=[face],outputs=[rel])
 unrel_model = Model(inputs=[blank], outputs=biases)
 
-#Train a model on the oracle label first
+
+# Train a model with oracle to test as well
+print "Training model using oracle labels"
 rel_model = Model(inputs=[face],outputs=[y])
 rel_model.compile(loss='categorical_crossentropy', optimizer='adam',metrics=['accuracy'])
-rel_model.fit(faces[isTrain], majage[isTrain], batch_size=64, epochs=50, validation_data=(faces[~isTrain], majage[~isTrain]))
+rel_model.save_weights('initial_weights.h5')
 
-loss, acc1= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+rel_model.fit(faces[isTrain], trueage[isTrain], batch_size=64, epochs=50, validation_data=(faces[~isTrain], trueage[~isTrain]),verbose=False)
+loss, acc3_te= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+loss, acc3_tr= rel_model.evaluate(faces[isTrain], trueage[isTrain])
 
 
+#Train a model on the majority label first
+print "Training model using majority labels"
+rel_model.load_weights('initial_weights.h5')
+rel_model.fit(faces[isTrain], majage[isTrain], batch_size=64, epochs=50, validation_data=(faces[~isTrain], majage[~isTrain]),verbose=False)
+
+loss, acc1_te= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+loss, acc1_tr= rel_model.evaluate(faces[isTrain], trueage[isTrain])
+
+print "Training model using MoAR and multiple annotator labels"
 pred_model=Model(inputs = [face,blank], outputs=[y_final])
 
 pred_model.compile(loss='categorical_crossentropy', optimizer='adam',metrics=['accuracy'])
-pred_model.fit([faces[isTrain],blank_input[isTrain]],estages[isTrain], batch_size=64, epochs=50, validation_data=([faces[~isTrain],blank_input[~isTrain]],estages[~isTrain]))
-loss, acc2= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+pred_model.fit([faces[isTrain],blank_input[isTrain]],estages[isTrain], batch_size=64, epochs=50, validation_data=([faces[~isTrain],blank_input[~isTrain]],estages[~isTrain]),verbose=False)
+loss, acc2_te= rel_model.evaluate(faces[~isTrain], trueage[~isTrain])
+loss, acc2_tr= rel_model.evaluate(faces[isTrain], trueage[isTrain])
 
 
-print
-print "Majority:",acc1*100
-print "DeepMOAR:",acc2*100
+
+
+print "\n\nTrain"
+print "Majority:",acc1_tr*100
+print "DeepMOAR:",acc2_tr*100
+print "Oracle:",acc3_tr*100
+
+print "\n\nTest"
+print "Majority:",acc1_te*100
+print "DeepMOAR:",acc2_te*100
+print "Oracle:",acc3_te*100
